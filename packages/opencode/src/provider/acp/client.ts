@@ -355,25 +355,36 @@ sessionID: sessionContext.sessionID as SessionID,
       if (initResult.authMethods && initResult.authMethods.length > 0) {
         const envVarMethod = initResult.authMethods.find((m) => (m as any).type === "env_var")
         const agentMethod = initResult.authMethods.find((m) => (m as any).type === "agent")
-        // Prefer env_var when env vars configured, else agent method, else first available
-        const authMethod = this.env && envVarMethod ? envVarMethod : agentMethod || initResult.authMethods[0]
 
-        log.info("ACP authenticating", {
-          methodId: authMethod.id,
-          methodType: (authMethod as any).type,
-          methodName: authMethod.name,
-          hasEnvVars: !!this.env,
-        })
+        // When API key is passed via env/args, the CLI authenticates before ACP starts.
+        // Skip the ACP authenticate step to avoid triggering browser login flows
+        // (e.g. cursor_login) when credentials are already provided externally.
+        const hasPreAuth = this.env && (this.env.CURSOR_API_KEY || this.env.QODER_PERSONAL_ACCESS_TOKEN)
+        if (hasPreAuth) {
+          log.info("ACP skipping authenticate — credentials provided via env/args", {
+            hasEnvVars: !!this.env,
+            authMethods: initResult.authMethods.map((m) => m.id),
+          })
+        } else {
+          const authMethod = this.env && envVarMethod ? envVarMethod : agentMethod || initResult.authMethods[0]
 
-        try {
-          const authResult = await this.connection.authenticate({ methodId: authMethod.id })
-          log.info("ACP authenticated successfully", { authResult })
-        } catch (authError) {
-          log.error("ACP authentication failed", { error: authError })
-          await this.cleanup()
-          throw new Error(
-            `ACP authentication failed: ${authError instanceof Error ? authError.message : JSON.stringify(authError)}`,
-          )
+          log.info("ACP authenticating", {
+            methodId: authMethod.id,
+            methodType: (authMethod as any).type,
+            methodName: authMethod.name,
+            hasEnvVars: !!this.env,
+          })
+
+          try {
+            const authResult = await this.connection.authenticate({ methodId: authMethod.id })
+            log.info("ACP authenticated successfully", { authResult })
+          } catch (authError) {
+            log.error("ACP authentication failed", { error: authError })
+            await this.cleanup()
+            throw new Error(
+              `ACP authentication failed: ${authError instanceof Error ? authError.message : JSON.stringify(authError)}`,
+            )
+          }
         }
       }
     } catch (error) {
