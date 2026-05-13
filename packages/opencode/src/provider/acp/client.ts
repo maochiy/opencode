@@ -17,18 +17,20 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk"
-import { Log } from "../../util/log"
-import { Config } from "../../config/config"
+import * as Log from "@opencode-ai/core/util/log"
+import { Config } from "@/config/config"
 import { convertAllMcps } from "./mcp-converter"
-import { Agent as OpencodeAgent } from "../../agent/agent"
-import { Filesystem } from "../../util/filesystem"
-import { Permission } from "../../permission/index"
-import { PermissionNext } from "../../permission/next"
-import { Instance } from "../../project/instance"
-import { Bus } from "../../bus"
-import { File } from "../../file"
-import { FileTime } from "../../file/time"
-import { Installation } from "../../installation"
+import { Agent as OpencodeAgent } from "@/agent/agent"
+import { Filesystem } from "@/util/filesystem"
+import { Permission } from "@/permission"
+import { Instance } from "@/project/instance"
+import type { InstanceContext } from "@/project/instance"
+import { Bus } from "@/bus"
+import { File } from "@/file"
+import { Installation } from "@/installation"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { AppRuntime } from "@/effect/app-runtime"
+import { SessionID, MessageID } from "@/session/schema"
 import path from "path"
 
 const log = Log.create({ service: "acp-client" })
@@ -51,23 +53,34 @@ export class ACPClient {
   private updateHandlers: Set<SessionUpdateHandler> = new Set()
   private command: string
   private args: string[]
+  private env?: Record<string, string>
   private permissionConfig?: OpencodeAgent.Info["permission"]
   private sessionContext?: {
     sessionID: string
     messageID: string
     agentName: string
   }
+  private instanceDirectory: string
+  private instanceWorktree: string
+  private instanceProjectId: string
 
   constructor(
     command: string,
     args: string[],
+    env?: Record<string, string>,
     permissionConfig?: OpencodeAgent.Info["permission"],
     sessionContext?: { sessionID: string; messageID: string; agentName: string },
+    instanceCtx?: InstanceContext,
   ) {
     this.command = command
     this.args = args
+    this.env = env
     this.permissionConfig = permissionConfig
     this.sessionContext = sessionContext
+    const ctx = instanceCtx ?? Instance.current
+    this.instanceDirectory = ctx.directory
+    this.instanceWorktree = ctx.worktree
+    this.instanceProjectId = ctx.project.id
   }
 
   /**
@@ -82,7 +95,7 @@ export class ACPClient {
         stdin: "pipe",
         stdout: "pipe",
         stderr: "inherit",
-        env: process.env,
+        env: { ...process.env, ...this.env },
       })
 
       if (!this.subprocess.stdin || !this.subprocess.stdout) {
@@ -110,6 +123,8 @@ export class ACPClient {
       const updateHandlers = this.updateHandlers
       const permissionConfig = this.permissionConfig
       const sessionContext = this.sessionContext
+      const instanceDirectory = this.instanceDirectory
+      const instanceWorktree = this.instanceWorktree
 
       // Create the ACP connection with a Client implementation
       this.connection = new ClientSideConnection((_agent: Agent) => {
@@ -132,7 +147,7 @@ export class ACPClient {
           },
           async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
             const toolKind = params.toolCall.kind
-            const rawInput = params.toolCall.rawInput || {}
+            const rawInput = (params.toolCall.rawInput as Record<string, any>) || {}
 
             const permType = getPermissionType(toolKind, rawInput)
             if (!permType) {
@@ -145,7 +160,7 @@ export class ACPClient {
 
             if (permType.type === "bash") {
               const command = (rawInput.command as string) || ""
-              const bashRule = PermissionNext.evaluate("bash", command, permissionConfig ?? [])
+              const bashRule = Permission.evaluate("bash", command, permissionConfig ?? [])
 
               return await handlePermissionAction(bashRule.action, params, updateHandlers, sessionContext, {
                 type: "bash",
@@ -158,13 +173,13 @@ export class ACPClient {
             if (permType.type === "read" && permType.filePath) {
               const absolutePath = path.isAbsolute(permType.filePath)
                 ? permType.filePath
-                : path.join(Instance.directory, permType.filePath)
+                : path.join(instanceDirectory, permType.filePath)
 
-              const isExternal = !Filesystem.contains(Instance.directory, absolutePath)
+              const isExternal = !Filesystem.contains(instanceDirectory, absolutePath)
 
               if (isExternal) {
                 const parentDir = path.dirname(absolutePath)
-                const externalRule = PermissionNext.evaluate("external_directory", parentDir, permissionConfig ?? [])
+                const externalRule = Permission.evaluate("external_directory", parentDir, permissionConfig ?? [])
 
                 return await handlePermissionAction(externalRule.action, params, updateHandlers, sessionContext, {
                   type: "external_directory",
@@ -176,7 +191,7 @@ export class ACPClient {
             }
 
             // For other permission types, evaluate against the ruleset
-            const permRule = PermissionNext.evaluate(permType.type, "*", permissionConfig ?? [])
+            const permRule = Permission.evaluate(permType.type, "*", permissionConfig ?? [])
 
             return await handlePermissionAction(permRule.action, params, updateHandlers, sessionContext, {
               type: permType.type,
@@ -187,27 +202,30 @@ export class ACPClient {
           async readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
             const filePath = path.isAbsolute(params.path)
               ? params.path
-              : path.join(Instance.directory, params.path)
+              : path.join(instanceDirectory, params.path)
 
-            const isExternal = !Filesystem.contains(Instance.directory, filePath)
+            const isExternal = !Filesystem.contains(instanceDirectory, filePath)
             if (isExternal) {
               const parentDir = path.dirname(filePath)
-              const externalRule = PermissionNext.evaluate("external_directory", parentDir, permissionConfig ?? [])
+              const externalRule = Permission.evaluate("external_directory", parentDir, permissionConfig ?? [])
 
               if (externalRule.action === "deny") {
                 throw new Error(`Permission denied: cannot read external file ${params.path}`)
               } else if (externalRule.action === "ask" && sessionContext) {
-                const callID = `acp-read-${Date.now()}`
                 try {
-                  await Permission.ask({
-                    type: "external_directory",
-                    pattern: [parentDir, path.join(parentDir, "*")],
-                    sessionID: sessionContext.sessionID,
-                    messageID: sessionContext.messageID,
-                    callID,
-                    message: `Read external file: ${params.path}`,
-                    metadata: { filepath: params.path, parentDir },
-                  })
+                  await AppRuntime.runPromise(
+                    Permission.Service.use((svc) =>
+                      svc.ask({
+                        permission: "external_directory",
+                        patterns: [parentDir, path.join(parentDir, "*")],
+sessionID: sessionContext.sessionID as SessionID,
+                         metadata: { filepath: params.path, parentDir },
+                         always: [],
+                         ruleset: permissionConfig ?? [],
+                         tool: { messageID: sessionContext.messageID as MessageID, callID: `acp-read-${Date.now()}` },
+                      }),
+                    ),
+                  )
                 } catch (error) {
                   if (error instanceof Permission.RejectedError) {
                     throw new Error(`Permission denied: cannot read external file ${params.path}`)
@@ -225,39 +243,38 @@ export class ACPClient {
 
             const content = await file.text()
 
-            if (sessionContext) {
-              FileTime.read(sessionContext.sessionID, filePath)
-            }
-
             return { content }
           },
           async writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
             const filePath = path.isAbsolute(params.path)
               ? params.path
-              : path.join(Instance.directory, params.path)
+              : path.join(instanceDirectory, params.path)
 
             const file = Bun.file(filePath)
             const exists = await file.exists()
-            const isExternal = !Filesystem.contains(Instance.directory, filePath)
+            const isExternal = !Filesystem.contains(instanceDirectory, filePath)
 
             if (isExternal) {
               const parentDir = path.dirname(filePath)
-              const externalRule = PermissionNext.evaluate("external_directory", parentDir, permissionConfig ?? [])
+              const externalRule = Permission.evaluate("external_directory", parentDir, permissionConfig ?? [])
 
               if (externalRule.action === "deny") {
                 throw new Error(`Permission denied: cannot write to external file ${params.path}`)
               } else if (externalRule.action === "ask" && sessionContext) {
-                const callID = `acp-write-${Date.now()}`
                 try {
-                  await Permission.ask({
-                    type: "external_directory",
-                    pattern: [parentDir, path.join(parentDir, "*")],
-                    sessionID: sessionContext.sessionID,
-                    messageID: sessionContext.messageID,
-                    callID,
-                    message: `Write to external file: ${params.path}`,
-                    metadata: { filepath: params.path, parentDir },
-                  })
+                  await AppRuntime.runPromise(
+                    Permission.Service.use((svc) =>
+                      svc.ask({
+                        permission: "external_directory",
+                        patterns: [parentDir, path.join(parentDir, "*")],
+sessionID: sessionContext.sessionID as SessionID,
+                         metadata: { filepath: params.path, parentDir },
+                         always: [],
+                         ruleset: permissionConfig ?? [],
+                         tool: { messageID: sessionContext.messageID as MessageID, callID: `acp-write-${Date.now()}` },
+                      }),
+                    ),
+                  )
                 } catch (error) {
                   if (error instanceof Permission.RejectedError) {
                     throw new Error(`Permission denied: cannot write to external file ${params.path}`)
@@ -266,25 +283,29 @@ export class ACPClient {
                 }
               }
             } else {
-              const editRule = PermissionNext.evaluate("edit", params.path, permissionConfig ?? [])
+              const editRule = Permission.evaluate("edit", params.path, permissionConfig ?? [])
 
               if (editRule.action === "deny") {
                 throw new Error(`Permission denied: cannot write to file ${params.path}`)
               } else if (editRule.action === "ask" && sessionContext) {
-                const callID = `acp-write-${Date.now()}`
                 try {
-                  await Permission.ask({
-                    type: "write",
-                    sessionID: sessionContext.sessionID,
-                    messageID: sessionContext.messageID,
-                    callID,
-                    message: exists ? `Overwrite file: ${params.path}` : `Create file: ${params.path}`,
-                    metadata: {
-                      filePath: params.path,
-                      content: params.content,
-                      exists,
-                    },
-                  })
+                  await AppRuntime.runPromise(
+                    Permission.Service.use((svc) =>
+                      svc.ask({
+                        permission: "write",
+                        patterns: [params.path],
+sessionID: sessionContext.sessionID as SessionID,
+                         metadata: {
+                           filePath: params.path,
+                           content: params.content,
+                           exists,
+                         },
+                         always: [],
+                         ruleset: permissionConfig ?? [],
+                         tool: { messageID: sessionContext.messageID as MessageID, callID: `acp-write-${Date.now()}` },
+                      }),
+                    ),
+                  )
                 } catch (error) {
                   if (error instanceof Permission.RejectedError) {
                     throw new Error(`Permission denied: cannot write to file ${params.path}`)
@@ -304,10 +325,6 @@ export class ACPClient {
             await Bun.write(filePath, params.content)
             await Bus.publish(File.Event.Edited, { file: filePath })
 
-            if (sessionContext) {
-              FileTime.read(sessionContext.sessionID, filePath)
-            }
-
             return {}
           },
         }
@@ -319,7 +336,7 @@ export class ACPClient {
         protocolVersion: PROTOCOL_VERSION,
         clientInfo: {
           name: "opencode",
-          version: Installation.VERSION,
+          version: InstallationVersion,
         },
         clientCapabilities: {
           fs: {
@@ -332,7 +349,33 @@ export class ACPClient {
       log.info("ACP connection initialized", {
         agentInfo: initResult.agentInfo,
         agentCapabilities: initResult.agentCapabilities,
+        authMethods: initResult.authMethods,
       })
+
+      if (initResult.authMethods && initResult.authMethods.length > 0) {
+        const envVarMethod = initResult.authMethods.find((m) => (m as any).type === "env_var")
+        const agentMethod = initResult.authMethods.find((m) => (m as any).type === "agent")
+        // Prefer env_var when env vars configured, else agent method, else first available
+        const authMethod = this.env && envVarMethod ? envVarMethod : agentMethod || initResult.authMethods[0]
+
+        log.info("ACP authenticating", {
+          methodId: authMethod.id,
+          methodType: (authMethod as any).type,
+          methodName: authMethod.name,
+          hasEnvVars: !!this.env,
+        })
+
+        try {
+          const authResult = await this.connection.authenticate({ methodId: authMethod.id })
+          log.info("ACP authenticated successfully", { authResult })
+        } catch (authError) {
+          log.error("ACP authentication failed", { error: authError })
+          await this.cleanup()
+          throw new Error(
+            `ACP authentication failed: ${authError instanceof Error ? authError.message : JSON.stringify(authError)}`,
+          )
+        }
+      }
     } catch (error) {
       await this.cleanup()
       log.error("Failed to initialize ACP client", { error })
@@ -353,7 +396,7 @@ export class ACPClient {
     using _ = log.time("createSession")
 
     // Fetch and convert OpenCode MCPs to ACP format
-    const openCodeConfig = await Config.get()
+    const openCodeConfig = await AppRuntime.runPromise(Config.Service.use((svc) => svc.get()))
     const mcpServers = openCodeConfig.mcp ? convertAllMcps(openCodeConfig.mcp) : []
 
     log.info("Creating session with MCPs", {
@@ -362,7 +405,7 @@ export class ACPClient {
     })
 
     const result = await this.connection.newSession({
-      cwd: process.cwd(),
+      cwd: this.instanceDirectory,
       mcpServers,
     })
 
@@ -476,7 +519,7 @@ function getPermissionType(
 }
 
 async function handlePermissionAction(
-  action: PermissionNext.Action,
+  action: Permission.Action,
   params: RequestPermissionRequest,
   updateHandlers: Set<SessionUpdateHandler>,
   sessionContext:
@@ -526,18 +569,20 @@ async function promptUserPermission(
     return selectAllowOption(params.options, "allow_once")
   }
 
-  const callID = `acp-${Date.now()}`
-
   try {
-    await Permission.ask({
-      type: permissionInfo.type,
-      pattern: permissionInfo.pattern,
-      sessionID: sessionContext.sessionID,
-      messageID: sessionContext.messageID,
-      callID,
-      message: permissionInfo.message,
-      metadata: permissionInfo.metadata,
-    })
+    await AppRuntime.runPromise(
+      Permission.Service.use((svc) =>
+        svc.ask({
+          permission: permissionInfo.type,
+          patterns: permissionInfo.pattern ?? ["*"],
+          sessionID: sessionContext.sessionID as SessionID,
+          metadata: permissionInfo.metadata,
+          always: [],
+          ruleset: [],
+          tool: { messageID: sessionContext.messageID as MessageID, callID: `acp-${Date.now()}` },
+        }),
+      ),
+    )
 
     const isAlways = false
 

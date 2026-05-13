@@ -7,7 +7,7 @@ import type {
   LanguageModelV2ReasoningPart,
 } from "@ai-sdk/provider"
 import type { ContentBlock } from "@agentclientprotocol/sdk"
-import { Log } from "../../util/log"
+import * as Log from "@opencode-ai/core/util/log"
 
 type MessagePart =
   | LanguageModelV2TextPart

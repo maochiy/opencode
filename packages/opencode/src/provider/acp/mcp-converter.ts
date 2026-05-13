@@ -1,6 +1,6 @@
-import type { McpServer, Stdio, HttpHeader, EnvVariable } from "@agentclientprotocol/sdk"
-import type { Config } from "../../config/config"
-import { Log } from "../../util/log"
+import type { McpServer, McpServerStdio, HttpHeader, EnvVariable } from "@agentclientprotocol/sdk"
+import type { ConfigMCP } from "@/config/mcp"
+import * as Log from "@opencode-ai/core/util/log"
 
 const log = Log.create({ service: "acp-mcp-converter" })
 
@@ -16,7 +16,7 @@ const log = Log.create({ service: "acp-mcp-converter" })
  * - http: { type: "http", name, url, headers }
  * - sse: { type: "sse", name, url, headers }
  */
-export function convertMcpToAcp(name: string, mcp: Config.Mcp): McpServer[] {
+export function convertMcpToAcp(name: string, mcp: ConfigMCP.Info): McpServer[] {
   // Skip disabled MCPs
   if (mcp.enabled === false) {
     log.info("Skipping disabled MCP", { name })
@@ -38,7 +38,7 @@ export function convertMcpToAcp(name: string, mcp: Config.Mcp): McpServer[] {
 /**
  * Convert local (stdio) MCP to ACP format
  */
-function convertLocalMcp(name: string, mcp: Extract<Config.Mcp, { type: "local" }>): McpServer[] {
+function convertLocalMcp(name: string, mcp: Extract<ConfigMCP.Info, { type: "local" }>): McpServer[] {
   const [command, ...args] = mcp.command
 
   // Convert environment variables to ACP format
@@ -49,7 +49,7 @@ function convertLocalMcp(name: string, mcp: Extract<Config.Mcp, { type: "local" 
       }))
     : []
 
-  const acpMcp: Stdio = {
+  const acpMcp: McpServerStdio = {
     name,
     command,
     args,
@@ -72,7 +72,7 @@ function convertLocalMcp(name: string, mcp: Extract<Config.Mcp, { type: "local" 
  * NOTE: Currently only stdio MCPs are supported by most ACP agents.
  * Remote (http/sse) MCPs are skipped for now.
  */
-function convertRemoteMcp(name: string, mcp: Extract<Config.Mcp, { type: "remote" }>): McpServer[] {
+function convertRemoteMcp(name: string, mcp: Extract<ConfigMCP.Info, { type: "remote" }>): McpServer[] {
   log.warn("Remote MCPs not yet supported by ACP agents - skipping", {
     name,
     url: mcp.url,
@@ -94,7 +94,7 @@ function convertRemoteMcp(name: string, mcp: Extract<Config.Mcp, { type: "remote
  * Convert all MCPs from OpenCode config to ACP format
  * Note: Config may include entries like { enabled: boolean } to disable MCPs
  */
-export function convertAllMcps(mcpConfig: Record<string, Config.Mcp | { enabled: boolean }>): McpServer[] {
+export function convertAllMcps(mcpConfig: Record<string, ConfigMCP.Info | { enabled: boolean }>): McpServer[] {
   const result: McpServer[] = []
 
   for (const [name, mcp] of Object.entries(mcpConfig)) {

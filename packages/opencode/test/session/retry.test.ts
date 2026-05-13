@@ -367,7 +367,7 @@ describe("session.message-v2.fromError", () => {
 
   test("converts wrapped ECONNRESET errors to retryable APIError", () => {
     const error = new Error("ConnectError: [aborted] read ECONNRESET")
-    const result = MessageV2.fromError(error, { providerID: "test" })
+    const result = MessageV2.fromError(error, { providerID: ProviderID.make("test") })
 
     expect(MessageV2.APIError.isInstance(result)).toBe(true)
     expect((result as MessageV2.APIError).data.isRetryable).toBe(true)

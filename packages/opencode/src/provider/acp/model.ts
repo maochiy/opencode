@@ -10,9 +10,11 @@ import type { SessionNotification } from "@agentclientprotocol/sdk"
 import { ACPClient } from "./client"
 import { vercelToACPMessages } from "./converters"
 import type { ACPModelConfig } from "./types"
-import { Log } from "../../util/log"
-import { Config } from "../../config/config"
-import { Agent } from "../../agent/agent"
+import * as Log from "@opencode-ai/core/util/log"
+import { Config } from "@/config/config"
+import { Agent } from "@/agent/agent"
+import { AppRuntime } from "@/effect/app-runtime"
+import { InstanceState } from "@/effect/instance-state"
 
 const log = Log.create({ service: "acp-model" })
 
@@ -44,12 +46,14 @@ export class ACPLanguageModel implements LanguageModelV2 {
 
   private command: string
   private args: string[]
+  private env?: Record<string, string>
   private maxTokens?: number
 
   constructor(config: ACPModelConfig) {
     this.modelId = config.modelId
     this.command = config.command
     this.args = config.args
+    this.env = config.env
     this.maxTokens = config.maxTokens
   }
 
@@ -94,13 +98,14 @@ export class ACPLanguageModel implements LanguageModelV2 {
   }> {
     using _ = log.time("doGenerate", { modelId: this.modelId })
 
-    const config = await Config.get()
+    const config = await AppRuntime.runPromise(Config.Service.use((svc) => svc.get()))
     const agentName = typeof config.agent === "string" ? config.agent : "build"
-    const agent = await Agent.get(agentName)
+    const agent = await AppRuntime.runPromise(Agent.Service.use((svc) => svc.get(agentName)))
     const sessionContext = this.getSessionContext(options)
+    const instanceCtx = await AppRuntime.runPromise(InstanceState.context)
 
     const clientArgs = [...this.args, "--model", this.modelId]
-    const client = new ACPClient(this.command, clientArgs, agent.permission, sessionContext)
+    const client = new ACPClient(this.command, clientArgs, this.env, agent.permission, sessionContext, instanceCtx)
 
     try {
       await client.initialize()
@@ -117,8 +122,6 @@ export class ACPLanguageModel implements LanguageModelV2 {
       let accumulatedText = ""
       const toolCalls: LanguageModelV2Content[] = []
       let finishReason: LanguageModelV2FinishReason = "unknown"
-      let inputTokens: number | undefined
-      let outputTokens: number | undefined
 
       // Set up update handler to collect content
       client.onUpdate((notification: SessionNotification) => {
@@ -170,9 +173,9 @@ export class ACPLanguageModel implements LanguageModelV2 {
         content,
         finishReason,
         usage: {
-          inputTokens,
-          outputTokens,
-          totalTokens: undefined,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
         },
         warnings: [],
       }
@@ -191,13 +194,14 @@ export class ACPLanguageModel implements LanguageModelV2 {
   }> {
     using _ = log.time("doStream", { modelId: this.modelId })
 
-    const config = await Config.get()
+    const config = await AppRuntime.runPromise(Config.Service.use((svc) => svc.get()))
     const agentName = typeof config.agent === "string" ? config.agent : "build"
-    const agent = await Agent.get(agentName)
+    const agent = await AppRuntime.runPromise(Agent.Service.use((svc) => svc.get(agentName)))
     const sessionContext = this.getSessionContext(options)
+    const instanceCtx = await AppRuntime.runPromise(InstanceState.context)
 
     const clientArgs = [...this.args, "--model", this.modelId]
-    const client = new ACPClient(this.command, clientArgs, agent.permission, sessionContext)
+    const client = new ACPClient(this.command, clientArgs, this.env, agent.permission, sessionContext, instanceCtx)
 
     const maxTokens = this.maxTokens
 
@@ -525,9 +529,9 @@ export class ACPLanguageModel implements LanguageModelV2 {
             type: "finish",
             finishReason: mapACPFinishReason(result.stopReason),
             usage: {
-              inputTokens: undefined,
-              outputTokens: undefined,
-              totalTokens: undefined,
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
             },
           })
           controller.close()

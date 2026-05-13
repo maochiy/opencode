@@ -1,7 +1,7 @@
 import type { LanguageModelV2 } from "@ai-sdk/provider"
 import { ACPLanguageModel } from "./model"
 import type { ACPProviderConfig } from "./types"
-import { Log } from "../../util/log"
+import * as Log from "@opencode-ai/core/util/log"
 
 const log = Log.create({ service: "acp-factory" })
 
@@ -25,6 +25,7 @@ export function createACPProvider(providerID: string, config: ACPProviderConfig)
       modelId: modelConfig.id,
       command: config.command,
       args: config.args,
+      env: config.env,
       maxTokens: modelConfig.maxTokens,
     })
   }

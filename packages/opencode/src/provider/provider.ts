@@ -1290,7 +1290,6 @@ const layer: Layer.Layer<
               pickBy(merged, (v) => !v.disabled),
               (v) => omit(v, ["disabled"]),
             )
-            )
             parsed.models[modelID] = parsedModel
           }
           database[providerID] = parsed
@@ -1448,8 +1447,8 @@ const layer: Layer.Layer<
           })
 
           // Mark as ACP provider in the providers registry
-          if (providers[providerID]) {
-            ;(providers[providerID] as any).type = "acp"
+          if (providers[providerID as ProviderID]) {
+            ;(providers[providerID as ProviderID] as any).type = "acp"
           }
 
           const { createACPProvider } = yield* Effect.promise(() => import("./acp"))
@@ -1457,6 +1456,7 @@ const layer: Layer.Layer<
           const acpModels = createACPProvider(providerID, {
             command: providerConfig.options.command,
             args: providerConfig.options.args,
+            env: providerConfig.options.env,
             models: Object.fromEntries(
               Object.entries(providerConfig.models ?? {}).map(([modelID, model]) => [
                 modelID,
@@ -1471,7 +1471,7 @@ const layer: Layer.Layer<
           // Register each ACP model directly in the languages map
           for (const [modelID, languageModel] of Object.entries(acpModels)) {
             const key = `${providerID}/${modelID}`
-            languages.set(key, languageModel as LanguageModelV3)
+            languages.set(key, languageModel as unknown as LanguageModelV3)
             log.info("registered ACP model", { key })
           }
         }

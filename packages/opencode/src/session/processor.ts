@@ -711,7 +711,6 @@ export const layer: Layer.Layer<
               },
             })
           }
-          })
         }
         ctx.toolcalls = {}
         ctx.assistantMessage.time.completed = Date.now()
