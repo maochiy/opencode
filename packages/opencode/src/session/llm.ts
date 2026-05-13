@@ -415,13 +415,56 @@ const live: Layer.Layer<
           model: language,
           middleware: [
             {
-              specificationVersion: "v3" as const,
+              specificationVersion: "v3",
               async transformParams(args) {
                 if (args.type === "stream") {
                   // @ts-expect-error
                   args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
                 }
                 return args.params
+              },
+              // wrapLanguageModel hardcodes "v3" → AI SDK skips V2→V3 conversion
+              // → V2 finishReason string read as .unified → undefined → infinite loop
+              async wrapStream({ doStream, model }) {
+                const result = await doStream()
+                // model is the original unwrapped model — runtime specVersion may be "v2"
+                if ((model as { specificationVersion: string }).specificationVersion !== "v2") return result
+                const reader = result.stream.getReader()
+                const convertedStream = new ReadableStream({
+                  async pull(controller) {
+                    const { done, value } = await reader.read()
+                    if (done) {
+                      controller.close()
+                      reader.releaseLock()
+                      return
+                    }
+
+                    if (value.type === "finish") {
+                      // V2 finish: { finishReason: "stop", usage: { inputTokens: N } }
+                      // V3 finish: { finishReason: { unified: "stop", raw }, usage: { inputTokens: { total: N } } }
+                      const v2Finish = value as any
+                      controller.enqueue({
+                        type: "finish",
+                        finishReason: {
+                          unified: v2Finish.finishReason === "unknown" ? "other" : v2Finish.finishReason,
+                          raw: undefined,
+                        },
+                        usage: {
+                          inputTokens: { total: v2Finish.usage?.inputTokens ?? 0 },
+                          outputTokens: { total: v2Finish.usage?.outputTokens ?? 0 },
+                        },
+                        providerMetadata: v2Finish.providerMetadata,
+                      })
+                    } else {
+                      controller.enqueue(value)
+                    }
+                  },
+                  cancel() {
+                    reader.cancel()
+                  },
+                })
+
+                return { ...result, stream: convertedStream }
               },
             },
           ],
