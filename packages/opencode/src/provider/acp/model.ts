@@ -15,6 +15,7 @@ import { Config } from "@/config/config"
 import { Agent } from "@/agent/agent"
 import { AppRuntime } from "@/effect/app-runtime"
 import { InstanceState } from "@/effect/instance-state"
+import { Instance } from "@/project/instance"
 
 const log = Log.create({ service: "acp-model" })
 
@@ -124,7 +125,7 @@ export class ACPLanguageModel implements LanguageModelV2 {
       let finishReason: LanguageModelV2FinishReason = "unknown"
 
       // Set up update handler to collect content
-      client.onUpdate((notification: SessionNotification) => {
+      const handleUpdate = Instance.bind((notification: SessionNotification) => {
         try {
           const update = notification.update
 
@@ -149,9 +150,9 @@ export class ACPLanguageModel implements LanguageModelV2 {
           }
         } catch (error) {
           log.error("Error handling session update", { error })
-          // Don't throw - let the main flow handle completion
         }
       })
+      client.onUpdate(handleUpdate)
 
       // Send the prompt
       const result = await client.sendMessage(sessionId, acpMessages)
@@ -258,7 +259,8 @@ export class ACPLanguageModel implements LanguageModelV2 {
           }
 
           // Set up update handler to push to stream
-          client.onUpdate((notification: SessionNotification) => {
+          // onUpdate fires from ACP subprocess callback — outside ALS context
+          const handleUpdate = Instance.bind((notification: SessionNotification) => {
             pendingNotifications++
             try {
               const update = notification.update
@@ -493,6 +495,7 @@ export class ACPLanguageModel implements LanguageModelV2 {
               }
             }
           })
+          client.onUpdate(handleUpdate)
 
           // Send the prompt and wait for completion
           const result = await client.sendMessage(sessionId, acpMessages)
