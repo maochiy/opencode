@@ -194,6 +194,27 @@ const live: Layer.Layer<
 
       const tools = resolveTools(input)
 
+      const isACP = (item as any).type === "acp"
+
+      const finalTools = isACP
+        ? new Proxy(tools, {
+            get(target, prop, receiver) {
+              if (typeof prop === "string" && !Reflect.has(target, prop)) {
+                return tool({
+                  description: "Tool handled by ACP provider",
+                  inputSchema: jsonSchema({ type: "object", additionalProperties: true }),
+                  execute: async () => "Handled by ACP provider",
+                })
+              }
+              return Reflect.get(target, prop, receiver)
+            },
+            has(target, prop) {
+              if (typeof prop === "string") return true
+              return Reflect.has(target, prop)
+            },
+          })
+        : tools
+
       // LiteLLM and some Anthropic proxies require the tools parameter to be present
       // when message history contains tool calls, even if no tools are being used.
       // Add a dummy tool that is never called to satisfy this validation.
@@ -205,10 +226,6 @@ const live: Layer.Layer<
         input.model.providerID.toLowerCase().includes("litellm") ||
         input.model.api.id.toLowerCase().includes("litellm")
 
-      // LiteLLM/Bedrock rejects requests where the message history contains tool
-      // calls but no tools param is present. When there are no active tools (e.g.
-      // during compaction), inject a stub tool to satisfy the validation requirement.
-      // The stub description explicitly tells the model not to call it.
       if (
         (isLiteLLMProxy || input.model.providerID.includes("github-copilot")) &&
         Object.keys(tools).length === 0 &&
@@ -225,7 +242,7 @@ const live: Layer.Layer<
           execute: async () => ({ output: "", title: "", metadata: {} }),
         })
       }
-      const sortedTools = Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => a.localeCompare(b)))
+      const sortedTools = Object.fromEntries(Object.entries(finalTools).toSorted(([a], [b]) => a.localeCompare(b)))
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
@@ -364,8 +381,13 @@ const live: Layer.Layer<
         temperature: params.temperature,
         topP: params.topP,
         topK: params.topK,
-        providerOptions: ProviderTransform.providerOptions(input.model, params.options),
-        activeTools: Object.keys(sortedTools).filter((x) => x !== "invalid"),
+        providerOptions: ProviderTransform.providerOptions(input.model, params.options, {
+          sessionID: input.sessionID,
+          messageID: input.user.id,
+          agentName: input.agent.name,
+          providerInfo: item,
+        }),
+        activeTools: isACP ? undefined : Object.keys(sortedTools).filter((x) => x !== "invalid"),
         tools: sortedTools,
         toolChoice: input.toolChoice,
         maxOutputTokens: params.maxOutputTokens,

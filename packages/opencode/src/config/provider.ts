@@ -71,6 +71,9 @@ export const Model = Schema.Struct({
 export const Info = Schema.Struct({
   api: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
+  type: Schema.optional(Schema.Literals(["ai-sdk", "acp"])).annotate({
+    description: "Provider type: 'ai-sdk' for standard AI SDK providers, 'acp' for Agent Client Protocol providers",
+  }),
   env: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
   id: Schema.optional(Schema.String),
   npm: Schema.optional(Schema.String),

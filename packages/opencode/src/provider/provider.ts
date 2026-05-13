@@ -920,6 +920,9 @@ export const Info = Schema.Struct({
   id: ProviderID,
   name: Schema.String,
   source: Schema.Literals(["env", "config", "custom", "api"]),
+  type: Schema.optional(Schema.Literals(["ai-sdk", "acp"])).annotate({
+    description: "Provider type: 'ai-sdk' for standard AI SDK providers, 'acp' for Agent Client Protocol providers",
+  }),
   env: Schema.Array(Schema.String),
   key: optionalOmitUndefined(Schema.String),
   options: Schema.Record(Schema.String, Schema.Any),
@@ -1197,11 +1200,15 @@ const layer: Layer.Layer<
         // extend database from config
         for (const [providerID, provider] of configProviders) {
           const existing = database[providerID]
+
+          const isACPProvider = provider.type === "acp"
+
           const parsed: Info = {
             id: ProviderID.make(providerID),
             name: provider.name ?? existing?.name ?? providerID,
             env: provider.env ?? existing?.env ?? [],
             options: mergeDeep(existing?.options ?? {}, provider.options ?? {}),
+            ...(isACPProvider ? { type: "acp" as const } : {}),
             source: "config",
             models: existing?.models ?? {},
           }
@@ -1234,7 +1241,7 @@ const layer: Layer.Layer<
                 temperature: model.temperature ?? existingModel?.capabilities.temperature ?? false,
                 reasoning: model.reasoning ?? existingModel?.capabilities.reasoning ?? false,
                 attachment: model.attachment ?? existingModel?.capabilities.attachment ?? false,
-                toolcall: model.tool_call ?? existingModel?.capabilities.toolcall ?? true,
+                toolcall: isACPProvider ? false : (model.tool_call ?? existingModel?.capabilities.toolcall ?? true),
                 input: {
                   text: model.modalities?.input?.includes("text") ?? existingModel?.capabilities.input.text ?? true,
                   audio: model.modalities?.input?.includes("audio") ?? existingModel?.capabilities.input.audio ?? false,
@@ -1282,6 +1289,7 @@ const layer: Layer.Layer<
             parsedModel.variants = mapValues(
               pickBy(merged, (v) => !v.disabled),
               (v) => omit(v, ["disabled"]),
+            )
             )
             parsed.models[modelID] = parsedModel
           }
@@ -1424,6 +1432,48 @@ const layer: Layer.Layer<
           }
 
           log.info("found", { providerID })
+        }
+
+        // Load ACP providers
+        for (const [providerID, providerConfig] of configProviders) {
+          if (providerConfig.type !== "acp") continue
+          if (!providerConfig.options?.command || !Array.isArray(providerConfig.options?.args)) {
+            log.warn("ACP provider missing required options.command or options.args", { providerID })
+            continue
+          }
+
+          log.info("loading ACP provider", {
+            providerID,
+            command: providerConfig.options.command,
+          })
+
+          // Mark as ACP provider in the providers registry
+          if (providers[providerID]) {
+            ;(providers[providerID] as any).type = "acp"
+          }
+
+          const { createACPProvider } = yield* Effect.promise(() => import("./acp"))
+
+          const acpModels = createACPProvider(providerID, {
+            command: providerConfig.options.command,
+            args: providerConfig.options.args,
+            models: Object.fromEntries(
+              Object.entries(providerConfig.models ?? {}).map(([modelID, model]) => [
+                modelID,
+                {
+                  id: (model as any).id ?? modelID,
+                  maxTokens: (model as any).limit?.output,
+                },
+              ]),
+            ),
+          })
+
+          // Register each ACP model directly in the languages map
+          for (const [modelID, languageModel] of Object.entries(acpModels)) {
+            const key = `${providerID}/${modelID}`
+            languages.set(key, languageModel as LanguageModelV3)
+            log.info("registered ACP model", { key })
+          }
         }
 
         return {

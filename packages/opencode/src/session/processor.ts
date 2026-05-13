@@ -447,7 +447,14 @@ export const layer: Layer.Layer<
 
           case "tool-error": {
             const toolCall = yield* readToolCall(value.toolCallId)
-            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
+            const isProviderExecuted = toolCall?.part.metadata?.providerExecuted === true
+            if (isProviderExecuted) {
+              slog.info("skipping tool-error for provider-executed tool", {
+                toolCallId: value.toolCallId,
+                tool: toolCall?.part.tool,
+              })
+              return
+            }
             if (Flag.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM) {
               yield* sync.run(SessionEvent.Tool.Failed.Sync, {
                 sessionID: ctx.sessionID,
@@ -679,15 +686,31 @@ export const layer: Layer.Layer<
           const part = match.part
           const end = Date.now()
           const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
-          yield* session.updatePart({
-            ...part,
-            state: {
-              ...part.state,
-              status: "error",
-              error: "Tool execution aborted",
-              metadata: { ...metadata, interrupted: true },
-              time: { start: "time" in part.state ? part.state.time.start : end, end },
-            },
+          const isProviderExecuted = part.metadata?.providerExecuted === true
+          if (isProviderExecuted) {
+            yield* session.updatePart({
+              ...part,
+              state: {
+                status: "completed",
+                input: part.state.input ?? {},
+                output: "Tool completed by provider",
+                metadata: {},
+                title: part.tool,
+                time: { start: "time" in part.state ? part.state.time.start : end, end },
+              },
+            })
+          } else {
+            yield* session.updatePart({
+              ...part,
+              state: {
+                ...part.state,
+                status: "error",
+                error: "Tool execution aborted",
+                metadata: { ...metadata, interrupted: true },
+                time: { start: "time" in part.state ? part.state.time.start : end, end },
+              },
+            })
+          }
           })
         }
         ctx.toolcalls = {}

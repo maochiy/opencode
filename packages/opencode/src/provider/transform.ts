@@ -1226,13 +1226,17 @@ const SLUG_OVERRIDES: Record<string, string> = {
   amazon: "bedrock",
 }
 
-export function providerOptions(model: Provider.Model, options: { [x: string]: any }) {
+export function providerOptions(
+  model: Provider.Model,
+  options: { [x: string]: any },
+  context?: {
+    sessionID: string
+    messageID: string
+    agentName: string
+    providerInfo?: Provider.Info
+  },
+) {
   if (model.api.npm === "@ai-sdk/gateway") {
-    // Gateway providerOptions are split across two namespaces:
-    // - `gateway`: gateway-native routing/caching controls (order, only, byok, etc.)
-    // - `<upstream slug>`: provider-specific model options (anthropic/openai/...)
-    // We keep `gateway` as-is and route every other top-level option under the
-    // model-derived upstream slug.
     const i = model.api.id.indexOf("/")
     const rawSlug = i > 0 ? model.api.id.slice(0, i) : undefined
     const slug = rawSlug ? (SLUG_OVERRIDES[rawSlug] ?? rawSlug) : undefined
@@ -1245,7 +1249,6 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
 
     if (has) {
       if (slug) {
-        // Route model-specific options under the provider slug
         result[slug] = rest
       } else if (gateway && typeof gateway === "object" && !Array.isArray(gateway)) {
         result.gateway = { ...gateway, ...rest }
@@ -1257,28 +1260,41 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
     return result
   }
 
-  // AI SDK packages that resolve providerOptionsName by splitting the
-  // provider name on "." (e.g. "wafer.ai" -> "wafer") need the same
-  // logic here so the key we write matches the key they read.
-  // Other SDKs (xai, mistral, groq, cohere, etc.) use hardcoded keys
-  // like "xai" or "cohere" - applying .split(".")[0] would break those.
   const usesDotSplitOptions =
     model.api.npm === "@ai-sdk/openai-compatible" ||
     model.api.npm === "@ai-sdk/openai" ||
     model.api.npm === "@ai-sdk/anthropic"
   const key = sdkKey(model.api.npm) ?? (usesDotSplitOptions ? model.providerID.split(".")[0] : model.providerID)
-  // @ai-sdk/azure delegates to OpenAIChatLanguageModel which reads from
-  // providerOptions["openai"], but OpenAIResponsesLanguageModel checks
-  // "azure" first. Pass both so model options work on either code path.
   if (model.api.npm === "@ai-sdk/azure") {
-    return { openai: options, azure: options }
+    const azureOpts = { ...options }
+    if (context?.providerInfo?.type === "acp") {
+      azureOpts.sessionID = context.sessionID
+      azureOpts.messageID = context.messageID
+      azureOpts.agentName = context.agentName
+    }
+    return { openai: azureOpts, azure: azureOpts }
   }
-  return { [key]: options }
+  let result = { [key]: options }
+
+  if (context?.providerInfo?.type === "acp") {
+    result = {
+      ...result,
+      [key]: {
+        ...result[key],
+        sessionID: context.sessionID,
+        messageID: context.messageID,
+        agentName: context.agentName,
+      },
+    }
+  }
+
+  return result
 }
 
 export function maxOutputTokens(model: Provider.Model): number {
   return Math.min(model.limit.output, OUTPUT_TOKEN_MAX) || OUTPUT_TOKEN_MAX
 }
+
 
 export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 {
   /*

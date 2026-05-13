@@ -1080,6 +1080,20 @@ export function fromError(
         { cause: e },
       ).toObject()
     case (e as SystemError)?.code === "ECONNRESET":
+    case iife(() => {
+      // ACP subprocess backends wrap network errors (e.g. ConnectError: ECONNRESET)
+      // under cause chains, so detect ECONNRESET by both code and message
+      const errors = [
+        e,
+        (e as { cause?: unknown })?.cause,
+        ((e as { cause?: unknown })?.cause as { cause?: unknown })?.cause,
+      ]
+      const system = errors.find((x) => (x as SystemError)?.code === "ECONNRESET") as SystemError | undefined
+      const resetMessage = errors
+        .map((x) => (x as { message?: unknown })?.message)
+        .find((x) => typeof x === "string" && x.includes("ECONNRESET")) as string | undefined
+      return system !== undefined || resetMessage !== undefined
+    }):
       return new APIError(
         {
           message: "Connection reset by server",
