@@ -15,7 +15,7 @@ import { Config } from "@/config/config"
 import { Agent } from "@/agent/agent"
 import { AppRuntime } from "@/effect/app-runtime"
 import { InstanceState } from "@/effect/instance-state"
-import { Instance } from "@/project/instance"
+import { Instance, type InstanceContext } from "@/project/instance"
 
 const log = Log.create({ service: "acp-model" })
 
@@ -49,6 +49,7 @@ export class ACPLanguageModel implements LanguageModelV2 {
   private args: string[]
   private env?: Record<string, string>
   private maxTokens?: number
+  private instanceCtx: InstanceContext
 
   constructor(config: ACPModelConfig) {
     this.modelId = config.modelId
@@ -56,6 +57,9 @@ export class ACPLanguageModel implements LanguageModelV2 {
     this.args = config.args
     this.env = config.env
     this.maxTokens = config.maxTokens
+    // Capture ALS context at construction time (inside Effect runtime)
+    // so doStream/doGenerate can restore it when called by AI SDK
+    this.instanceCtx = Instance.current
   }
 
   get provider(): string {
@@ -97,16 +101,17 @@ export class ACPLanguageModel implements LanguageModelV2 {
     }
     warnings: Array<LanguageModelV2CallWarning>
   }> {
+    // AI SDK calls doGenerate outside ALS context — restore it
+    return Instance.restore(this.instanceCtx, async () => {
     using _ = log.time("doGenerate", { modelId: this.modelId })
 
     const config = await AppRuntime.runPromise(Config.Service.use((svc) => svc.get()))
     const agentName = typeof config.agent === "string" ? config.agent : "build"
     const agent = await AppRuntime.runPromise(Agent.Service.use((svc) => svc.get(agentName)))
     const sessionContext = this.getSessionContext(options)
-    const instanceCtx = await AppRuntime.runPromise(InstanceState.context)
 
     const clientArgs = [...this.args, "--model", this.modelId]
-    const client = new ACPClient(this.command, clientArgs, this.env, agent.permission, sessionContext, instanceCtx)
+    const client = new ACPClient(this.command, clientArgs, this.env, agent.permission, sessionContext, this.instanceCtx)
 
     try {
       await client.initialize()
@@ -183,6 +188,7 @@ export class ACPLanguageModel implements LanguageModelV2 {
     } finally {
       await client.cleanup()
     }
+    })
   }
 
   /**
@@ -193,16 +199,17 @@ export class ACPLanguageModel implements LanguageModelV2 {
     request?: { body?: unknown }
     response?: { headers?: Record<string, string> }
   }> {
+    // AI SDK calls doStream outside ALS context — restore it
+    return Instance.restore(this.instanceCtx, async () => {
     using _ = log.time("doStream", { modelId: this.modelId })
 
     const config = await AppRuntime.runPromise(Config.Service.use((svc) => svc.get()))
     const agentName = typeof config.agent === "string" ? config.agent : "build"
     const agent = await AppRuntime.runPromise(Agent.Service.use((svc) => svc.get(agentName)))
     const sessionContext = this.getSessionContext(options)
-    const instanceCtx = await AppRuntime.runPromise(InstanceState.context)
 
     const clientArgs = [...this.args, "--model", this.modelId]
-    const client = new ACPClient(this.command, clientArgs, this.env, agent.permission, sessionContext, instanceCtx)
+    const client = new ACPClient(this.command, clientArgs, this.env, agent.permission, sessionContext, this.instanceCtx)
 
     const maxTokens = this.maxTokens
 
@@ -548,6 +555,7 @@ export class ACPLanguageModel implements LanguageModelV2 {
     })
 
     return { stream }
+    })
   }
 }
 
