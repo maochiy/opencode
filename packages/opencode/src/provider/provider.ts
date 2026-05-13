@@ -1453,10 +1453,12 @@ const layer: Layer.Layer<
 
           const { createACPProvider } = yield* Effect.promise(() => import("./acp"))
 
+          const acpInstanceCtx = yield* InstanceState.context
           const acpModels = createACPProvider(providerID, {
             command: providerConfig.options.command,
             args: providerConfig.options.args,
             env: providerConfig.options.env,
+            instanceCtx: acpInstanceCtx,
             models: Object.fromEntries(
               Object.entries(providerConfig.models ?? {}).map(([modelID, model]) => [
                 modelID,

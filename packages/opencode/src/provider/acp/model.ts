@@ -57,9 +57,7 @@ export class ACPLanguageModel implements LanguageModelV2 {
     this.args = config.args
     this.env = config.env
     this.maxTokens = config.maxTokens
-    // Capture ALS context at construction time (inside Effect runtime)
-    // so doStream/doGenerate can restore it when called by AI SDK
-    this.instanceCtx = Instance.current
+    this.instanceCtx = config.instanceCtx ?? Instance.current
   }
 
   get provider(): string {

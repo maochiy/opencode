@@ -27,6 +27,7 @@ export function createACPProvider(providerID: string, config: ACPProviderConfig)
       args: config.args,
       env: config.env,
       maxTokens: modelConfig.maxTokens,
+      instanceCtx: config.instanceCtx,
     })
   }
 

@@ -1,4 +1,5 @@
 import type { LanguageModelV2CallOptions } from "@ai-sdk/provider"
+import type { InstanceContext } from "@/project/instance"
 
 export interface ACPProviderConfig {
   command: string
@@ -11,6 +12,7 @@ export interface ACPProviderConfig {
       maxTokens?: number
     }
   >
+  instanceCtx?: InstanceContext
 }
 
 export interface ACPModelConfig {
@@ -20,4 +22,5 @@ export interface ACPModelConfig {
   env?: Record<string, string>
   maxTokens?: number
   settings?: LanguageModelV2CallOptions
+  instanceCtx?: InstanceContext
 }
