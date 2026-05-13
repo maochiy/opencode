@@ -548,18 +548,17 @@ export class ACPLanguageModel implements LanguageModelV2 {
   }
 }
 
-/**
- * Map ACP stop reason to Vercel AI SDK finish reason
- */
+// ACP agents execute tools internally via MCP — "tool_use" means "I used tools
+// internally" (done), not "I need you to execute tools" (re-loop). Mapping to
+// "stop" prevents the session processor from looping endlessly.
 function mapACPFinishReason(stopReason: string | undefined): LanguageModelV2FinishReason {
   switch (stopReason) {
     case "end_turn":
     case "stop":
+    case "tool_use":
       return "stop"
     case "max_tokens":
       return "length"
-    case "tool_use":
-      return "tool-calls"
     case "error":
       return "error"
     default:
